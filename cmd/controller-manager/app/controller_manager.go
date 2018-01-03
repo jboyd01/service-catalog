@@ -18,6 +18,7 @@ limitations under the License.
 package app
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -44,9 +45,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apiserver/pkg/server/healthz"
+	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/leaderelection"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
-
 	// The API groups for our API must be installed before we can use the
 	// client to work with them.  This needs to be done once per process; this
 	// is the point at which we handle this for the controller-manager
@@ -296,6 +297,56 @@ func StartControllers(s *options.ControllerManagerServer,
 	recorder record.EventRecorder,
 	stop <-chan struct{}) error {
 
+	// Only attempt to start controller manager if caches are synced.
+	// but... caches were not previously setup prior to controller being started.
+	// So set them up, start, then wait for sync.  Something not right here,
+	// caches never report they are synchronized.  Looks like the issue is that
+	// sharedIndexInformer is not properly initialized - - it has a controller that is
+	// null.
+
+	// setup and start the Shared Informers
+
+	glog.V(5).Infof("Creating shared informers; resync interval: %v", s.ResyncInterval)
+
+	// Build the informer factory for service-catalog resources
+	informerFactory := servicecataloginformers.NewSharedInformerFactory(
+		serviceCatalogClientBuilder.ClientOrDie("shared-informers"),
+		s.ResyncInterval,
+	)
+
+	// All shared informers are v1beta1 API level
+	serviceCatalogSharedInformers := informerFactory.Servicecatalog().V1beta1()
+
+	glog.V(1).Info("Starting shared informers")
+	informerFactory.Start(stop)
+
+	// vvvvvvvvv debug code, verify that all caches are all reporting not synced  vvvvvvvvvvvvv
+	glog.V(5).Infof("checking if caches are sync'd via my own PollImmediate")
+	wait.PollImmediate(10*time.Second, 3*time.Minute, func() (bool, error) {
+		glog.Infof("ClusterServiceBrokers.hasSynced(): %v", serviceCatalogSharedInformers.ClusterServiceBrokers().Informer().HasSynced())
+		glog.Infof("ClusterServiceClasses.hasSynced(): %v", serviceCatalogSharedInformers.ClusterServiceClasses().Informer().HasSynced())
+		glog.Infof("ServiceInstances.hasSynced(): %v", serviceCatalogSharedInformers.ServiceInstances().Informer().HasSynced())
+		glog.Infof("ServiceBindings.hasSynced(): %v", serviceCatalogSharedInformers.ServiceBindings().Informer().HasSynced())
+		glog.Infof("ClusterServicePlans.hasSynced(): %v", serviceCatalogSharedInformers.ClusterServicePlans().Informer().HasSynced())
+
+		return false, nil
+	},
+	)
+	// ^^^^^^^^ debug code, verify that all caches are all reporting not synced  ^^^^^^^^^^^^
+
+	glog.V(5).Infof("wait for caches to be syncronized")
+	synchronized := cache.WaitForCacheSync(stop,
+		serviceCatalogSharedInformers.ClusterServiceBrokers().Informer().HasSynced,
+		serviceCatalogSharedInformers.ClusterServiceClasses().Informer().HasSynced,
+		serviceCatalogSharedInformers.ServiceInstances().Informer().HasSynced,
+		serviceCatalogSharedInformers.ServiceBindings().Informer().HasSynced,
+		serviceCatalogSharedInformers.ClusterServicePlans().Informer().HasSynced)
+
+	if !synchronized {
+		glog.Error("unable to start controller, caches are not syncronized")
+		return errors.New("unable to start controller, caches are not syncronized")
+
+	}
 	// Get available service-catalog resources
 	glog.V(5).Info("Getting available resources")
 	availableResources, err := getAvailableResources(serviceCatalogClientBuilder)
@@ -311,16 +362,6 @@ func StartControllers(s *options.ControllerManagerServer,
 
 	// Launch service-catalog controller
 	if availableResources[catalogGVR] {
-		glog.V(5).Infof("Creating shared informers; resync interval: %v", s.ResyncInterval)
-
-		// Build the informer factory for service-catalog resources
-		informerFactory := servicecataloginformers.NewSharedInformerFactory(
-			serviceCatalogClientBuilder.ClientOrDie("shared-informers"),
-			s.ResyncInterval,
-		)
-		// All shared informers are v1beta1 API level
-		serviceCatalogSharedInformers := informerFactory.Servicecatalog().V1beta1()
-
 		glog.V(5).Infof("Creating controller; broker relist interval: %v", s.ServiceBrokerRelistInterval)
 		serviceCatalogController, err := controller.NewController(
 			coreClient,
@@ -344,8 +385,6 @@ func StartControllers(s *options.ControllerManagerServer,
 		glog.V(5).Info("Running controller")
 		go serviceCatalogController.Run(s.ConcurrentSyncs, stop)
 
-		glog.V(1).Info("Starting shared informers")
-		informerFactory.Start(stop)
 	} else {
 		return fmt.Errorf("unable to start service-catalog controller: API GroupVersion %q is not available; found %#v", catalogGVR, availableResources)
 	}

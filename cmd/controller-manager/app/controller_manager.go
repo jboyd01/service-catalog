@@ -30,9 +30,9 @@ import (
 	"k8s.io/client-go/kubernetes"
 	v1core "k8s.io/client-go/kubernetes/typed/core/v1"
 
-	"github.com/kubernetes-incubator/service-catalog/pkg/api"
 	"k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/record"
@@ -190,7 +190,7 @@ func Run(controllerManagerOptions *options.ControllerManagerServer) error {
 	eventBroadcaster := record.NewBroadcaster()
 	eventBroadcaster.StartLogging(glog.Infof)
 	eventBroadcaster.StartRecordingToSink(&v1core.EventSinkImpl{Interface: k8sKubeClient.CoreV1().Events("")})
-	recorder := eventBroadcaster.NewRecorder(api.Scheme, v1.EventSource{Component: controllerManagerAgentName})
+	recorder := eventBroadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: controllerManagerAgentName})
 
 	// 'run' is the logic to run the controllers for the controller manager
 	run := func(stop <-chan struct{}) {

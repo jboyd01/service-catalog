@@ -352,23 +352,45 @@ func worker(queue workqueue.RateLimitingInterface, resourceType string, maxRetri
 				if quit {
 					return true
 				}
-				defer queue.Done(key)
+				defer func() {
+					if "ServiceInstance" == resourceType {
+						glog.Infof("WORKER queue.Done() %v", key.(string))
+					}
+					queue.Done(key)
+				}()
+				if "ServiceInstance" == resourceType {
+					glog.Infof("WORKER processing %v", key.(string))
+				}
 
 				err := reconciler(key.(string))
 				if err == nil {
+					if "ServiceInstance" == resourceType {
+						glog.Infof("WORKER successfully processed %v", key.(string))
+					}
 					if forgetAfterSuccess {
+						if "ServiceInstance" == resourceType {
+							glog.Infof("WORKER queue.Forget() %v", key.(string))
+						}
 						queue.Forget(key)
 					}
 					return false
 				}
 
+				if "ServiceInstance" == resourceType {
+					glog.Infof("WORKER got error processing %v, queue.NumRequeues=%v, max is %v", key, queue.NumRequeues(key), maxRetries)
+				}
+
 				if queue.NumRequeues(key) < maxRetries {
-					glog.V(4).Infof("Error syncing %s %v: %v", resourceType, key, err)
+					if "ServiceInstance" == resourceType {
+						glog.V(4).Infof("WORKER adding %v back to the queue (AddRateLimited())", key)
+					}
 					queue.AddRateLimited(key)
 					return false
 				}
 
-				glog.V(4).Infof("Dropping %s %q out of the queue: %v", resourceType, key, err)
+				if "ServiceInstance" == resourceType {
+					glog.V(4).Infof("WORKER dropping %v out of the queue because of maxRetries: %v", key, err)
+				}
 				queue.Forget(key)
 				return false
 			}()

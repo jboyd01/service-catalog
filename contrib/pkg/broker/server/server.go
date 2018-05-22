@@ -150,6 +150,13 @@ func (s *server) createServiceInstance(w http.ResponseWriter, r *http.Request) {
 		req.Parameters = make(map[string]interface{})
 	}
 
+	if req.ServiceID == "4f6e6cf6-ffdd-425f-a2c7-3c9258ad2468" {
+		glog.Info("JAY: Short circuiting instance creation, returning a 205")
+		err := fmt.Errorf("fake error")
+		util.WriteErrorResponse(w, http.StatusResetContent, err)
+		return
+	}
+
 	if result, err := s.controller.CreateServiceInstance(id, &req); err == nil {
 		util.WriteResponse(w, http.StatusCreated, result)
 	} else {

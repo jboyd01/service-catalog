@@ -20,14 +20,13 @@ import (
 	stderrors "errors"
 	"fmt"
 	"net/url"
+	"time"
 
 	"github.com/golang/glog"
-	osb "github.com/pmorie/go-open-service-broker-client/v2"
-	utilfeature "k8s.io/apiserver/pkg/util/feature"
-
 	"github.com/kubernetes-incubator/service-catalog/pkg/apis/servicecatalog/v1beta1"
 	scfeatures "github.com/kubernetes-incubator/service-catalog/pkg/features"
 	"github.com/kubernetes-incubator/service-catalog/pkg/pretty"
+	osb "github.com/pmorie/go-open-service-broker-client/v2"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -35,8 +34,8 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/tools/cache"
-	"time"
 )
 
 const (
@@ -91,6 +90,24 @@ const (
 	clusterIdentifierKey string = "clusterid"
 )
 
+
+var failedProvisionRetry struct {
+	sync.Mutex
+	orphanMitigationRetryTime map[string]time.Time
+	retryInterval             = time.Second * 120
+	lastCleaned               = time.Now()
+}
+
+var (
+	orphanMitigationRetryTime map[string]time.Time
+	retryInterval             = time.Second * 120
+	lastCleaned               = time.Now()
+)
+
+func init() {
+	orphanMitigationRetryTime = make(map[string]time.Time)
+}
+
 // ServiceInstance handlers and control-loop
 
 func (c *controller) instanceAdd(obj interface{}) {
@@ -99,8 +116,9 @@ func (c *controller) instanceAdd(obj interface{}) {
 		glog.Errorf("Couldn't get key for object %+v: %v", obj, err)
 		return
 	}
-
-	c.instanceQueue.Add(key)
+	glog.Infof("CTRL_INST - instanceAdd - adding Rate Limited instance to queue - for %v", key)
+	//debug.PrintStack()
+	c.instanceQueue.AddRateLimited(key)
 }
 
 func (c *controller) instanceUpdate(oldObj, newObj interface{}) {
@@ -148,6 +166,7 @@ func (c *controller) instanceDelete(obj interface{}) {
 // forgets the key from the polling queue, so the controller must call
 // continuePollingServiceInstance if the instance requires additional polling.
 func (c *controller) requeueServiceInstanceForPoll(key string) error {
+	glog.Infof("CTRL_INST - requeueServiceInstanceForPoll() NOT RATE LIMTED for %v", key)
 	c.instanceQueue.Add(key)
 
 	return nil
@@ -245,6 +264,7 @@ func (c *controller) reconcileServiceInstanceKey(key string) error {
 // error is returned to indicate that the instance has not been fully
 // processed and should be resubmitted at a later time.
 func (c *controller) reconcileServiceInstance(instance *v1beta1.ServiceInstance) error {
+	glog.Infof("CTRL_INST invoked to reconcileServiceInstance %+v", instance)
 	updated, err := c.initObservedGeneration(instance)
 	if err != nil {
 		return err
@@ -252,6 +272,7 @@ func (c *controller) reconcileServiceInstance(instance *v1beta1.ServiceInstance)
 	if updated {
 		// The updated instance will be automatically added back to the queue
 		// and processed again
+		glog.Infof("CTRL_INST reconcileServiceInstance early return - updated status")
 		return nil
 	}
 	updated, err = c.initOrphanMitigationCondition(instance)
@@ -261,17 +282,22 @@ func (c *controller) reconcileServiceInstance(instance *v1beta1.ServiceInstance)
 	if updated {
 		// The updated instance will be automatically added back to the queue
 		// and processed again
+		glog.Infof("CTRL_INST reconcileServiceInstance early return - updated status by OM")
 		return nil
 	}
 	reconciliationAction := getReconciliationActionForServiceInstance(instance)
 	switch reconciliationAction {
 	case reconcileAdd:
+		glog.Infof("CTRL_INST reconcileServiceInstance  handle ADD")
 		return c.reconcileServiceInstanceAdd(instance)
 	case reconcileUpdate:
+		glog.Infof("CTRL_INST reconcileServiceInstance  handle UPDATE")
 		return c.reconcileServiceInstanceUpdate(instance)
 	case reconcileDelete:
+		glog.Infof("CTRL_INST reconcileServiceInstance  handle DELETE")
 		return c.reconcileServiceInstanceDelete(instance)
 	case reconcilePoll:
+		glog.Infof("CTRL_INST reconcileServiceInstance  handle POLL")
 		return c.pollServiceInstance(instance)
 	default:
 		pcb := pretty.NewContextBuilder(pretty.ServiceInstance, instance.Namespace, instance.Name)
@@ -329,6 +355,19 @@ func (c *controller) initOrphanMitigationCondition(instance *v1beta1.ServiceInst
 	return false, nil
 }
 
+func (c *controller) purgeExpiredRetryEntries() {
+	now := time.Now()
+	if now.Before(lastCleaned.Add(time.Minute * 10)) {
+		return
+	}
+	for k := range orphanMitigationRetryTime {
+		if orphanMitigationRetryTime[k].Before(now) {
+			delete(orphanMitigationRetryTime, k)
+		}
+	}
+	lastCleaned = now
+}
+
 // reconcileServiceInstanceAdd is responsible for handling the provisioning
 // of new service instances.
 func (c *controller) reconcileServiceInstanceAdd(instance *v1beta1.ServiceInstance) error {
@@ -336,6 +375,14 @@ func (c *controller) reconcileServiceInstanceAdd(instance *v1beta1.ServiceInstan
 
 	if isServiceInstanceProcessedAlready(instance) {
 		glog.V(4).Info(pcb.Message("Not processing event because status showed there is no work to do"))
+		return nil
+	}
+
+	// don't DOS the broker
+	c.purgeExpiredRetryEntries()
+	key := instance.Namespace + "/" + instance.Name
+	if t := orphanMitigationRetryTime[key]; t.After(time.Now()) {
+		glog.V(4).Info(pcb.Message("Not processing event because Orphan Migitation was too recent"))
 		return nil
 	}
 
@@ -380,8 +427,11 @@ func (c *controller) reconcileServiceInstanceAdd(instance *v1beta1.ServiceInstan
 			// over with a fresh view of the instance.
 			return err
 		}
-		// recordStartOfServiceInstanceOperation has updated the instance, so we need to continue in the next iteration
-		return nil
+		glog.Info("**recordStartOfServiceInstanceOperation has updated the instance to Provisioning, so we need to continue in the next iteration")
+		glog.Infof("**instance=%+v", instance)
+		glog.Infof("**inProgressProperties=%+v", inProgressProperties)
+		glog.Infof("**returning an error for retry")
+		return fmt.Errorf("not an error-just-updating-status ")
 	}
 
 	glog.V(4).Info(pcb.Messagef(
@@ -500,6 +550,7 @@ func (c *controller) reconcileServiceInstanceUpdate(instance *v1beta1.ServiceIns
 	))
 
 	response, err := brokerClient.UpdateInstance(request)
+
 	if err != nil {
 		if httpErr, ok := osb.IsHTTPError(err); ok {
 			msg := fmt.Sprintf("ClusterServiceBroker returned a failure for update call; update will not be retried: %v", httpErr)
@@ -577,6 +628,8 @@ func (c *controller) reconcileServiceInstanceDelete(instance *v1beta1.ServiceIns
 		c.prepareObservedGeneration(instance)
 	}
 
+	glog.Infof("CTRL_INST in delete, orphanMitigation=%v", instance.Status.OrphanMitigationInProgress)
+
 	// If the deprovisioning succeeded or is not needed, then no need to
 	// make a request to the broker.
 	if instance.Status.DeprovisionStatus == v1beta1.ServiceInstanceDeprovisionStatusNotRequired ||
@@ -609,6 +662,10 @@ func (c *controller) reconcileServiceInstanceDelete(instance *v1beta1.ServiceIns
 	if err != nil {
 		return c.handleServiceInstanceReconciliationError(instance, err)
 	}
+
+	// assume a provision retry will happen after orphan mitigation, set a not before time
+	orphanMitigationRetryTime[instance.Name+"/"+instance.Namespace] = time.Now().Add(retryInterval)
+	glog.Infof("JJ adding %v for retry after %v", instance.Name+"/"+instance.Namespace, orphanMitigationRetryTime[instance.Name+"/"+instance.Namespace])
 
 	if instance.DeletionTimestamp == nil {
 		// Orphan mitigation
@@ -1863,6 +1920,7 @@ func (c *controller) processUpdateServiceInstanceAsyncResponse(instance *v1beta1
 func (c *controller) processDeprovisionSuccess(instance *v1beta1.ServiceInstance) error {
 	mitigatingOrphan := instance.Status.OrphanMitigationInProgress
 
+	glog.Infof("CTRL_INST processDeprovisionSuccess, mitigatingOrphan=%v", mitigatingOrphan)
 	reason := successDeprovisionReason
 	msg := successDeprovisionMessage
 	if mitigatingOrphan {
@@ -1883,6 +1941,9 @@ func (c *controller) processDeprovisionSuccess(instance *v1beta1.ServiceInstance
 			return err
 		}
 	} else {
+		// this was not part of Orphan Mitigation, make sure we clear out retry time if it exists
+		delete(orphanMitigationRetryTime, instance.Namespace+"/"+instance.Name)
+
 		// If part of a resource deletion request, follow-through to the
 		// graceful deletion handler in order to clear the finalizer.
 		if err := c.processServiceInstanceGracefulDeletionSuccess(instance); err != nil {
@@ -1891,6 +1952,11 @@ func (c *controller) processDeprovisionSuccess(instance *v1beta1.ServiceInstance
 	}
 
 	c.recorder.Event(instance, corev1.EventTypeNormal, reason, msg)
+	glog.Infof("CTRL_INST returning from processDeprovisionSuccess, mitigatingOrphan=%v", mitigatingOrphan)
+	if mitigatingOrphan {
+		glog.Infof("CTRL_INST returning orphan error")
+		return fmt.Errorf("orphan error")
+	}
 	return nil
 }
 

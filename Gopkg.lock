@@ -176,6 +176,25 @@
   revision = "420a452267a7ce45b3fcbed04d54030d69964fc1"
 
 [[projects]]
+  digest = "1:aecceadfca4ae8ba3994f979dd9be53ed4fac86aebf7756faaa35d59292d7d67"
+  name = "github.com/coreos/etcd-operator"
+  packages = [
+    "pkg/apis/etcd/v1beta2",
+    "pkg/client",
+    "pkg/generated/clientset/versioned",
+    "pkg/generated/clientset/versioned/scheme",
+    "pkg/generated/clientset/versioned/typed/etcd/v1beta2",
+    "pkg/util/constants",
+    "pkg/util/etcdutil",
+    "pkg/util/k8sutil",
+    "pkg/util/probe",
+    "pkg/util/retryutil",
+  ]
+  pruneopts = "NUT"
+  revision = "44f2671c8d74cad373282a6ba714071336a69452"
+  version = "v0.9.3"
+
+[[projects]]
   digest = "1:c298fe11665f7157328f2978bc60f761ffcc706b94bf077e661a59fe29b291a0"
   name = "github.com/coreos/go-semver"
   packages = ["semver"]
@@ -1030,6 +1049,20 @@
 
 [[projects]]
   branch = "release-1.12"
+  digest = "1:51f330b7a61ac0e8b6e082490586ff2b18008eb514a67eccbe5ec78ffd32ee25"
+  name = "k8s.io/apiextensions-apiserver"
+  packages = [
+    "pkg/apis/apiextensions",
+    "pkg/apis/apiextensions/v1beta1",
+    "pkg/client/clientset/clientset",
+    "pkg/client/clientset/clientset/scheme",
+    "pkg/client/clientset/clientset/typed/apiextensions/v1beta1",
+  ]
+  pruneopts = "NUT"
+  revision = "1f84094d7e8e3ad85431881fc572cbafd80ee4d4"
+
+[[projects]]
+  branch = "release-1.12"
   digest = "1:e490e423b55b9016bdd25e148cf310729264f5e6a1af5765d2d51e6beb992d21"
   name = "k8s.io/apimachinery"
   packages = [
@@ -1459,6 +1492,12 @@
   input-imports = [
     "code.cloudfoundry.org/lager",
     "github.com/Azure/go-autorest/autorest",
+    "github.com/coreos/etcd-operator/pkg/client",
+    "github.com/coreos/etcd-operator/pkg/generated/clientset/versioned",
+    "github.com/coreos/etcd-operator/pkg/util/constants",
+    "github.com/coreos/etcd-operator/pkg/util/k8sutil",
+    "github.com/coreos/etcd-operator/pkg/util/probe",
+    "github.com/coreos/etcd-operator/pkg/util/retryutil",
     "github.com/coreos/etcd/embed",
     "github.com/coreos/pkg/capnslog",
     "github.com/davecgh/go-spew/spew",

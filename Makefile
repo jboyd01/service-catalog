@@ -91,6 +91,8 @@ USER_BROKER_IMAGE                 = $(REGISTRY)user-broker-$(ARCH):$(VERSION)
 USER_BROKER_MUTABLE_IMAGE         = $(REGISTRY)user-broker-$(ARCH):$(MUTABLE_TAG)
 HEALTHCHECK_IMAGE                 = $(REGISTRY)healthcheck-$(ARCH):$(VERSION)
 HEALTHCHECK_MUTABLE_IMAGE         = $(REGISTRY)healthcheck-$(ARCH):$(MUTABLE_TAG)
+INITETCD_IMAGE                    = $(REGISTRY)init-etcd-$(ARCH):$(VERSION)
+INITETCD_MUTABLE_IMAGE            = $(REGISTRY)init-etcd-$(ARCH):$(MUTABLE_TAG)
 ifdef UNIT_TESTS
 	UNIT_TEST_FLAGS=-run $(UNIT_TESTS) -v
 endif
@@ -124,7 +126,9 @@ endif
 build: .init .generate_files \
 	$(BINDIR)/service-catalog \
 	$(BINDIR)/user-broker \
-	$(BINDIR)/healthcheck
+	$(BINDIR)/healthcheck \
+	$(BINDIR)/init-etcd
+
 
 .PHONY: $(BINDIR)/user-broker
 user-broker: $(BINDIR)/user-broker
@@ -138,6 +142,13 @@ healthcheck: $(BINDIR)/healthcheck
 $(BINDIR)/healthcheck: .init cmd/healthcheck \
 	  $(shell find cmd/healthcheck -type f)
 	$(DOCKER_CMD) $(GO_BUILD) -o $@ $(SC_PKG)/cmd/healthcheck
+
+.PHONY: $(BINDIR)/init-etcd
+init-etcd: $(BINDIR)/init-etcd
+$(BINDIR)/init-etcd: .init cmd/init-etcd \
+	  $(shell find cmd/init-etcd -type f)
+	$(DOCKER_CMD) $(GO_BUILD) -o $@ $(SC_PKG)/cmd/init-etcd
+
 
 .PHONY: $(BINDIR)/service-catalog
 service-catalog: $(BINDIR)/service-catalog
@@ -326,7 +337,7 @@ clean-coverage:
 
 # Building Docker Images for our executables
 ############################################
-images: user-broker-image service-catalog-image healthcheck-image
+images: user-broker-image service-catalog-image healthcheck-image init-etcd-image
 
 images-all: $(addprefix arch-image-,$(ALL_ARCH))
 arch-image-%:
@@ -369,6 +380,13 @@ healthcheck-image: contrib/build/healthcheck/Dockerfile $(BINDIR)/healthcheck
 ifeq ($(ARCH),amd64)
 	docker tag $(HEALTHCHECK_IMAGE) $(REGISTRY)healthcheck:$(VERSION)
 	docker tag $(HEALTHCHECK_MUTABLE_IMAGE) $(REGISTRY)healthcheck:$(MUTABLE_TAG)
+endif
+
+init-etcd-image: contrib/build/init-etcd/Dockerfile $(BINDIR)/init-etcd
+	$(call build-and-tag,"init-etcd",$(INIT-ETCD_IMAGE),$(INIT-ETCD_MUTABLE_IMAGE),"contrib/")
+ifeq ($(ARCH),amd64)
+	docker tag $(INIT-ETCD_IMAGE) $(REGISTRY)init-etcd:$(VERSION)
+	docker tag $(INIT-ETCD_MUTABLE_IMAGE) $(REGISTRY)init-etcd:$(MUTABLE_TAG)
 endif
 
 # Push our Docker Images to a registry
